@@ -101,23 +101,11 @@ export default function App() {
     )
   }
 
+  // ── Viewing phase: three-column layout (desktop) / stacked (mobile) ───────
   return (
-    <div className="flex h-screen overflow-hidden bg-[#f5f4f0]">
-      <aside className="w-80 shrink-0 bg-white border-r overflow-y-auto">
-        <MorphSliders morphValues={morphValues} onChange={handleMorphChange} />
-        <div className="px-4 pb-4">
-          <button
-            className={`w-full px-3 py-2 rounded-lg text-sm border ${
-              measureMode ? 'bg-red-50 border-red-300 text-red-700' : 'hover:bg-gray-100'
-            }`}
-            onClick={() => setMeasureMode(m => !m)}
-          >
-            {measureMode ? '测量模式：开' : '测量模式：关'}
-          </button>
-        </div>
-      </aside>
-
-      <main className="flex-1 min-w-0">
+    <div className="flex flex-col md:flex-row h-screen overflow-hidden bg-[#f5f4f0]">
+      {/* On mobile: viewer appears first (order-first), panels below */}
+      <main className="order-first md:order-2 flex-1 min-h-[50vh] md:min-h-0">
         {jobId && (
           <Viewer3D
             jobId={jobId}
@@ -133,7 +121,23 @@ export default function App() {
         )}
       </main>
 
-      <aside className="w-72 shrink-0 bg-white border-l overflow-y-auto">
+      {/* Left panel */}
+      <aside className="order-2 md:order-1 md:w-80 shrink-0 bg-white border-r md:border-r border-t md:border-t-0 overflow-y-auto">
+        <MorphSliders morphValues={morphValues} onChange={handleMorphChange} />
+        <div className="px-4 pb-4">
+          <button
+            className={`w-full px-3 py-2 rounded-lg text-sm border ${
+              measureMode ? 'bg-red-50 border-red-300 text-red-700' : 'hover:bg-gray-100'
+            }`}
+            onClick={() => setMeasureMode(m => !m)}
+          >
+            {measureMode ? '测量模式：开' : '测量模式：关'}
+          </button>
+        </div>
+      </aside>
+
+      {/* Right panel */}
+      <aside className="order-3 md:w-72 shrink-0 bg-white border-l md:border-l border-t md:border-t-0 overflow-y-auto">
         <div className="p-4 border-b">
           <button
             className={`w-full px-3 py-2 rounded-lg text-sm border ${
