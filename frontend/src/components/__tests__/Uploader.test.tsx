@@ -30,7 +30,7 @@ describe('Uploader', () => {
 
   it('rejects non-image files with error message', async () => {
     render(<Uploader onSubmit={onSubmit} isLoading={false} />)
-    const input = screen.getAllByTestId('file-input')[0]
+    const input = screen.getByTestId('file-front')
     const bad = makeFile('doc.pdf', 'application/pdf', 1024)
     await userEvent.upload(input, bad)
     expect(screen.getByText(/JPG 或 PNG/)).toBeInTheDocument()
@@ -38,7 +38,7 @@ describe('Uploader', () => {
 
   it('rejects files over 10 MB', async () => {
     render(<Uploader onSubmit={onSubmit} isLoading={false} />)
-    const input = screen.getAllByTestId('file-input')[0]
+    const input = screen.getByTestId('file-front')
     const big = makeFile('face.jpg', 'image/jpeg', 11 * 1024 * 1024)
     await userEvent.upload(input, big)
     expect(screen.getByText(/10 MB/)).toBeInTheDocument()
@@ -46,7 +46,7 @@ describe('Uploader', () => {
 
   it('enables submit and calls onSubmit with front file', async () => {
     render(<Uploader onSubmit={onSubmit} isLoading={false} />)
-    const input = screen.getAllByTestId('file-input')[0]
+    const input = screen.getByTestId('file-front')
     const good = makeFile('face.jpg', 'image/jpeg', 1024)
     await userEvent.upload(input, good)
     const btn = screen.getByRole('button', { name: /生成/ })

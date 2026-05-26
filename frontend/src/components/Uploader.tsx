@@ -1,5 +1,5 @@
 // frontend/src/components/Uploader.tsx
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 interface DropZoneProps {
   label: string
@@ -23,9 +23,14 @@ function DropZone({ label, required, onFile, testId }: DropZoneProps) {
     const err = validate(f)
     if (err) { setError(err); onFile(null); return }
     setError(null)
+    if (preview) URL.revokeObjectURL(preview)
     setPreview(URL.createObjectURL(f))
     onFile(f)
   }
+
+  useEffect(() => {
+    return () => { if (preview) URL.revokeObjectURL(preview) }
+  }, [preview])
 
   return (
     <div className="flex flex-col items-center gap-1 w-full">
@@ -65,9 +70,9 @@ export function Uploader({ onSubmit, isLoading }: UploaderProps) {
   return (
     <div className="flex flex-col gap-4 p-4">
       <h2 className="text-lg font-semibold">上传照片</h2>
-      <DropZone label="正面"     required onFile={setFront}   testId="file-input" />
-      <DropZone label="左侧 45°"          onFile={setLeft45}  testId="file-input" />
-      <DropZone label="右侧 45°"          onFile={setRight45} testId="file-input" />
+      <DropZone label="正面"     required onFile={setFront}   testId="file-front" />
+      <DropZone label="左侧 45°"          onFile={setLeft45}  testId="file-left45" />
+      <DropZone label="右侧 45°"          onFile={setRight45} testId="file-right45" />
       <p className="text-xs text-gray-500">* 必填；侧面照片可提升重建质量</p>
       <button
         className="mt-2 px-4 py-2 bg-blue-600 text-white rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"

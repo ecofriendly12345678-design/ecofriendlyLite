@@ -12,11 +12,11 @@ import {
 
 interface ReferenceLinesProps {
   frontImageUrl: string | null   // object URL of the uploaded front photo
-  meshRef: React.MutableRefObject<THREE.Mesh | null>
+  mesh: THREE.Mesh | null
   visible: boolean
 }
 
-export function ReferenceLines({ frontImageUrl, meshRef, visible }: ReferenceLinesProps) {
+export function ReferenceLines({ frontImageUrl, mesh, visible }: ReferenceLinesProps) {
   const { camera } = useThree()
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
   const [linePoints, setLinePoints] = useState<{ horizontal: THREE.Vector3[][]; vertical: THREE.Vector3[][] }>({
@@ -25,12 +25,11 @@ export function ReferenceLines({ frontImageUrl, meshRef, visible }: ReferenceLin
   })
 
   useEffect(() => {
-    if (!visible || !frontImageUrl || !meshRef.current) return
+    if (!visible || !frontImageUrl || !mesh) return
 
     detectLandmarks(frontImageUrl).then(landmarks => {
-      if (!landmarks || !meshRef.current) return
+      if (!landmarks || !mesh) return
 
-      const mesh = meshRef.current
       const bb   = new THREE.Box3().setFromObject(mesh)
       const Z    = (bb.min.z + bb.max.z) / 2
 
@@ -66,7 +65,7 @@ export function ReferenceLines({ frontImageUrl, meshRef, visible }: ReferenceLin
 
       setLinePoints({ horizontal: hLines, vertical: vLines })
     })
-  }, [visible, frontImageUrl, meshRef, camera, raycaster])
+  }, [visible, frontImageUrl, mesh, camera, raycaster])
 
   if (!visible) return null
 

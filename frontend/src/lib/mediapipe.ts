@@ -32,7 +32,7 @@ export async function getFaceLandmarker(): Promise<FaceLandmarker> {
 
   const { FaceLandmarker, FilesetResolver } = await import('@mediapipe/tasks-vision')
   const vision = await FilesetResolver.forVisionTasks(
-    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm',
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm',
   )
   _landmarker = await FaceLandmarker.createFromOptions(vision, {
     baseOptions: {

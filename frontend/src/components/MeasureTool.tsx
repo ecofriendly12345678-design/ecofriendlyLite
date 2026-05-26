@@ -7,25 +7,13 @@ import type { MeasurePoint } from '../types'
 
 interface MeasureSphereProps {
   points: MeasurePoint[]
-  measureMode: boolean
-  meshRef: React.MutableRefObject<THREE.Mesh | null>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onAdd: (pos: THREE.Vector3) => void
   onRemoveNearest: (pos: THREE.Vector3) => void
 }
 
-export function MeasureSpheres({ points, measureMode, meshRef, onAdd, onRemoveNearest }: MeasureSphereProps) {
+export function MeasureSpheres({ points, onAdd, onRemoveNearest }: MeasureSphereProps) {
   return (
     <>
-      {measureMode && meshRef.current && (
-        <primitive
-          object={meshRef.current}
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          onClick={(e: any) => { e.stopPropagation(); onAdd(e.point.clone()) }}
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          onContextMenu={(e: any) => { e.stopPropagation(); onRemoveNearest(e.point.clone()) }}
-        />
-      )}
       {points.map(p => (
         <mesh key={p.id} position={p.pos}>
           <sphereGeometry args={[0.003, 8, 8]} />

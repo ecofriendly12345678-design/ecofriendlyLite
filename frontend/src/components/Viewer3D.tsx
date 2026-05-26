@@ -43,17 +43,19 @@ function FaceScene({
 
   return (
     <>
-      <primitive object={scene} />
+      <primitive
+        object={scene}
+        onClick={measureMode ? (e: any) => { e.stopPropagation(); onAddPoint(e.point.clone()) } : undefined}
+        onContextMenu={measureMode ? (e: any) => { e.stopPropagation(); onRemoveNearest(e.point.clone()) } : undefined}
+      />
       <MeasureSpheres
         points={measurePoints}
-        measureMode={measureMode}
-        meshRef={meshRef}
         onAdd={onAddPoint}
         onRemoveNearest={onRemoveNearest}
       />
       <ReferenceLines
         frontImageUrl={frontImageUrl}
-        meshRef={meshRef}
+        mesh={mesh}
         visible={showRefLines}
       />
     </>
