@@ -23,6 +23,7 @@ python3 -m venv .venv && .venv/bin/pip install pytest pyyaml
 ```bash
 PYTHONPATH=src .venv/bin/python -m agent.agent           # real-time loop
 PYTHONPATH=src .venv/bin/python -m agent.agent --once    # single tick
+PYTHONPATH=src .venv/bin/python -m agent.dashboard       # live local dashboard
 .venv/bin/python -m pytest                               # tests
 ```
 
@@ -52,6 +53,18 @@ The v2 strategy layer is being introduced behind the existing v1 loop.
 `implications.yaml` contains manually verified A-implies-B relations with
 matching resolution terms. `momentum` stays disabled until v2b backtests
 validate parameters.
+
+## Dashboard
+
+Run the local dashboard server, then open `http://127.0.0.1:8765`:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m agent.dashboard --db virtual_ledger.db
+```
+
+The page polls the local SQLite ledger every two seconds and shows paper orders,
+fills, positions, cash, equity, and P&L. It does not connect to Polymarket and
+does not place orders.
 
 ## Design docs
 
