@@ -1,0 +1,41 @@
+# Polymarket paper-trading arb agent — user config
+virtual_capital_usd: 1000        # starting virtual cash
+poll_interval_seconds: 5
+min_edge: 0.01                   # act only if a full set is ≥1¢ under $1
+est_fee: 0.00                    # fee/slippage buffer subtracted from edge
+max_notional_per_trade_usd: 50
+max_concurrent_positions: 10
+sanity_min_mid_sum: 0.95         # skip sets whose midpoints sum below this (likely non-exhaustive)
+db_path: virtual_ledger.db
+strategies:
+  complete_set:
+    enabled: true
+    bucket_usd: 500
+  implication:
+    enabled: false               # turn on after manually verified implications.yaml entries exist
+    bucket_usd: 300
+    relations_file: implications.yaml
+  momentum:
+    enabled: false               # v2b: requires backtest-validated params before live paper loop
+    bucket_usd: 200
+    params:
+      lookback_minutes: 60
+      entry_return_threshold: 0.05
+      price_min: 0.10
+      price_max: 0.90
+      max_spread: 0.03
+      take_profit: 0.10
+      stop_loss: 0.05
+      max_hold_hours: 24
+      position_usd: 20
+watchlist:
+  # Long-dated binary markets (resolve at GTA VI release — stay alive for months)
+  - type: binary
+    ref: new-rhianna-album-before-gta-vi-926
+  - type: binary
+    ref: new-playboi-carti-album-before-gta-vi-421
+  - type: binary
+    ref: will-bitcoin-hit-1m-before-gta-vi-872-424
+  # Neg-risk multi-outcome event: Harvey Weinstein sentencing (mutually exclusive brackets)
+  - type: event
+    ref: "24383"
