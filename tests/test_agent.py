@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from decimal import Decimal
 
 import pytest
@@ -15,6 +16,7 @@ class FakeCli:
         self.markets = markets or {}
         self.events = events or {}
         self.books = books or {}
+        self.get_books_calls = 0
 
     def get_market(self, ref):
         return self.markets[ref]
@@ -23,6 +25,7 @@ class FakeCli:
         return self.events[ref]
 
     def get_books(self, token_ids):
+        self.get_books_calls += 1
         return {t: self.books[t] for t in token_ids if t in self.books}
 
     def get_midpoints(self, token_ids):
@@ -104,6 +107,27 @@ def test_tick_opens_position_on_arb(tmp_path):
     assert s.open_positions == 1
     assert s.guaranteed_pnl > 0
     assert portfolio.has_open_position("0xc1")
+
+
+def test_tick_routes_complete_set_through_paper_broker(tmp_path, capsys):
+    c = cfg(tmp_path)
+    cli = FakeCli(
+        markets={"q": market_json()},
+        books={"101": raw_book("101", "0.55", "0.53"),
+               "102": raw_book("102", "0.42", "0.40")},
+    )
+    portfolio = Portfolio(c.db_path, c.virtual_capital_usd)
+
+    s = tick(cli, sets_list(cli, c.watchlist), portfolio, c)
+
+    captured = capsys.readouterr().out
+    assert s.open_positions == 1
+    assert cli.get_books_calls == 1
+    assert "source=polymarket_cli" in captured
+    rows = sqlite3.connect(c.db_path).execute(
+        "SELECT status, last_match_source FROM paper_orders"
+    ).fetchall()
+    assert rows == [("filled", "polymarket_cli")]
 
 
 def test_tick_no_arb_no_position(tmp_path):

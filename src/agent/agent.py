@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import argparse
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from agent import report
 from agent.cli import CliError, PolymarketCli
 from agent.config import Config, WatchlistEntry, load_config
 from agent.fills import plan_set_purchase
+from agent.market_data import BookSnapshot
 from agent.models import OrderBook, ResultSet
+from agent.paper_broker import PaperBroker, PaperOrder
 from agent.portfolio import Portfolio, Summary
 from agent.scanner import find_opportunities, result_set_from_event, result_set_from_market
+from agent.strategies import EntryProposal
 
 
 def build_result_sets(
@@ -60,6 +64,25 @@ def tick(cli, sets: list[ResultSet], portfolio: Portfolio, cfg: Config) -> Summa
     all_tokens = sorted({t for rs in sets for t in rs.token_ids})
     raw_books = cli.get_books(all_tokens)
     books = {tid: OrderBook.from_json(b) for tid, b in raw_books.items()}
+    snapshot = BookSnapshot(
+        fetched_at=datetime.now(timezone.utc),
+        source="polymarket_cli",
+        books=books,
+    )
+    print(report.render_market_data(snapshot))
+    complete_set_cfg = cfg.strategies.get("complete_set") if cfg.strategies else None
+    strategy_buckets = {
+        "complete_set": (
+            complete_set_cfg.bucket_usd if complete_set_cfg is not None
+            else cfg.virtual_capital_usd
+        )
+    }
+    broker = PaperBroker(
+        portfolio,
+        max_concurrent_positions=cfg.max_concurrent_positions,
+        strategy_buckets=strategy_buckets,
+        max_book_age_seconds=max(cfg.poll_interval_seconds * 2, 1),
+    )
 
     opps = find_opportunities(
         sets, books, cfg.min_edge, cfg.est_fee, cfg.sanity_min_mid_sum
@@ -93,12 +116,21 @@ def tick(cli, sets: list[ResultSet], portfolio: Portfolio, cfg: Config) -> Summa
             portfolio.record_opportunity(opp, acted=False, reason=reason)
             print(report.render_opportunity(opp, False, reason))
             continue
-        portfolio.open_position(purchase)
-        used_tokens.update(rs.token_ids)
-        reason = (f"bought {purchase.n_sets} sets @ {purchase.cost_per_set} "
-                  f"locked={purchase.locked_profit}")
-        portfolio.record_opportunity(opp, acted=True, reason=reason)
-        print(report.render_opportunity(opp, True, reason))
+        order = PaperOrder.from_entry_proposal(
+            EntryProposal("complete_set", purchase, f"edge={opp.edge}"),
+            created_at=snapshot.fetched_at,
+        )
+        submit = broker.submit_order(order)
+        match = broker.match_open_orders(snapshot, now=snapshot.fetched_at)
+        acted = match.filled > 0
+        if acted:
+            used_tokens.update(rs.token_ids)
+            reason = (f"paper order {submit.order_id} filled {purchase.n_sets} sets "
+                      f"@ {purchase.cost_per_set} locked={purchase.locked_profit}")
+        else:
+            reason = match.messages[0] if match.messages else "paper order not filled"
+        portfolio.record_opportunity(opp, acted=acted, reason=reason)
+        print(report.render_opportunity(opp, acted, reason))
 
     mids = {tid: b.midpoint for tid, b in books.items() if b.midpoint is not None}
     return portfolio.mark_to_market(mids)
