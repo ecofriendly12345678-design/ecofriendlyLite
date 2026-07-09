@@ -55,10 +55,24 @@ class PolymarketCli:
         return self._run("events", "get", ref)
 
     def get_books(self, token_ids: list[str]) -> dict[str, dict]:
+        """Books keyed by canonical token id. One bad token can poison a whole
+        batched `clob books` call, so on a chunk failure we retry that chunk's
+        tokens individually and skip only the ones that genuinely error —
+        the caller (scanner/MTM) already tolerates missing books."""
         out: dict[str, dict] = {}
         for i in range(0, len(token_ids), _CHUNK):
             chunk = token_ids[i : i + _CHUNK]
-            result = self._run("clob", "books", ",".join(chunk))
+            try:
+                result = self._run("clob", "books", ",".join(chunk))
+            except CliError:
+                for tid in chunk:
+                    try:
+                        book = self._run("clob", "book", tid)
+                    except CliError as e:
+                        print(f"warn: no book for token {tid[:16]}…: {e.message[:80]}")
+                        continue
+                    out[normalize_token_id(book["asset_id"])] = book
+                continue
             for book in result:
                 out[normalize_token_id(book["asset_id"])] = book
         return out

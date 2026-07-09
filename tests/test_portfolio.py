@@ -100,3 +100,54 @@ def test_record_opportunity(tmp_path):
     rows = sqlite3.connect(db(tmp_path)).execute(
         "SELECT set_id, acted, reason FROM opportunities").fetchall()
     assert rows == [("0xc1", 0, "edge below threshold")]
+
+
+class FlakyConn:
+    """Wraps a sqlite3 connection; raises on the Nth statement matching a substring."""
+
+    def __init__(self, real, fail_substr, fail_at):
+        self._real = real
+        self._fail_substr = fail_substr
+        self._fail_at = fail_at
+        self._count = 0
+
+    def execute(self, sql, *args):
+        if self._fail_substr in sql:
+            self._count += 1
+            if self._count == self._fail_at:
+                import sqlite3
+                raise sqlite3.OperationalError("disk I/O error (simulated)")
+        return self._real.execute(sql, *args)
+
+    def __enter__(self):
+        return self._real.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real.__exit__(*exc)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_open_position_is_atomic_on_midwrite_failure(tmp_path):
+    # Review finding regression: a failure between the position INSERT and its
+    # fills INSERTs must roll back the whole position, not leave an orphan row
+    # for the next unrelated commit to persist.
+    import sqlite3
+
+    import pytest
+
+    path = db(tmp_path)
+    p = Portfolio(path, Decimal("1000"))
+    p._conn = FlakyConn(p._conn, "INSERT INTO fills", 2)  # fail on 2nd leg
+
+    with pytest.raises(sqlite3.OperationalError):
+        p.open_position(make_purchase())
+
+    # A subsequent unrelated write must not resurrect the partial position.
+    p.record_opportunity(make_opp("0xother"), acted=False, reason="x")
+
+    fresh = Portfolio(path, Decimal("1000"))
+    assert fresh.cash() == Decimal("1000")
+    assert not fresh.has_open_position("0xc1")
+    assert fresh.summary().open_positions == 0

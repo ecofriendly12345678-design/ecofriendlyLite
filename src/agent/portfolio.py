@@ -114,52 +114,56 @@ class Portfolio:
 
     def open_position(self, purchase: SetPurchase) -> int:
         rs = purchase.result_set
-        cur = self._conn.execute(
-            "INSERT INTO positions(opened_at, set_id, description, kind, n_sets,"
-            " total_cost, guaranteed_payout, status)"
-            " VALUES (?,?,?,?,?,?,?, 'open')",
-            (_now(), rs.set_id, rs.description, rs.kind, str(purchase.n_sets),
-             str(purchase.total_cost), str(purchase.guaranteed_payout)))
-        pid = cur.lastrowid
-        for f in purchase.fills:
-            self._conn.execute(
-                "INSERT INTO fills(position_id, token_id, label, qty, avg_price,"
-                " cost, last_mid) VALUES (?,?,?,?,?,?,?)",
-                (pid, f.token_id, f.label, str(f.qty), str(f.avg_price),
-                 str(f.cost), str(f.avg_price)))
-        self._conn.commit()
+        # `with conn:` = one transaction — commits on success, rolls back on
+        # any exception. Without it, a failure between the position INSERT and
+        # its fills INSERTs would leave an orphan row that the NEXT unrelated
+        # commit silently persists, durably corrupting the ledger.
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO positions(opened_at, set_id, description, kind, n_sets,"
+                " total_cost, guaranteed_payout, status)"
+                " VALUES (?,?,?,?,?,?,?, 'open')",
+                (_now(), rs.set_id, rs.description, rs.kind, str(purchase.n_sets),
+                 str(purchase.total_cost), str(purchase.guaranteed_payout)))
+            pid = cur.lastrowid
+            for f in purchase.fills:
+                self._conn.execute(
+                    "INSERT INTO fills(position_id, token_id, label, qty, avg_price,"
+                    " cost, last_mid) VALUES (?,?,?,?,?,?,?)",
+                    (pid, f.token_id, f.label, str(f.qty), str(f.avg_price),
+                     str(f.cost), str(f.avg_price)))
         return pid
 
     def record_opportunity(self, opp: Opportunity, acted: bool, reason: str) -> None:
-        self._conn.execute(
-            "INSERT INTO opportunities(seen_at, set_id, description, cost_per_set,"
-            " edge, acted, reason) VALUES (?,?,?,?,?,?,?)",
-            (_now(), opp.result_set.set_id, opp.result_set.description,
-             str(opp.cost), str(opp.edge), int(acted), reason))
-        self._conn.commit()
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO opportunities(seen_at, set_id, description, cost_per_set,"
+                " edge, acted, reason) VALUES (?,?,?,?,?,?,?)",
+                (_now(), opp.result_set.set_id, opp.result_set.description,
+                 str(opp.cost), str(opp.edge), int(acted), reason))
 
     def _compute(self, mids: dict[str, Decimal] | None) -> Summary:
         cash = self.cash()
         value = Decimal("0")
         guaranteed = Decimal("0")
         cost_total = Decimal("0")
-        positions = self._conn.execute(
-            "SELECT id, total_cost, guaranteed_payout FROM positions"
-            " WHERE status='open'").fetchall()
-        for pid, total_cost, gpay in positions:
-            cost_total += Decimal(total_cost)
-            guaranteed += Decimal(gpay)
-            for fid, tid, qty, last_mid in self._conn.execute(
-                    "SELECT id, token_id, qty, last_mid FROM fills"
-                    " WHERE position_id=?", (pid,)).fetchall():
-                mid = (mids or {}).get(tid)
-                if mid is not None:
-                    self._conn.execute(
-                        "UPDATE fills SET last_mid=? WHERE id=?", (str(mid), fid))
-                else:
-                    mid = Decimal(last_mid) if last_mid is not None else Decimal("0")
-                value += Decimal(qty) * mid
-        self._conn.commit()
+        with self._conn:
+            positions = self._conn.execute(
+                "SELECT id, total_cost, guaranteed_payout FROM positions"
+                " WHERE status='open'").fetchall()
+            for pid, total_cost, gpay in positions:
+                cost_total += Decimal(total_cost)
+                guaranteed += Decimal(gpay)
+                for fid, tid, qty, last_mid in self._conn.execute(
+                        "SELECT id, token_id, qty, last_mid FROM fills"
+                        " WHERE position_id=?", (pid,)).fetchall():
+                    mid = (mids or {}).get(tid)
+                    if mid is not None:
+                        self._conn.execute(
+                            "UPDATE fills SET last_mid=? WHERE id=?", (str(mid), fid))
+                    else:
+                        mid = Decimal(last_mid) if last_mid is not None else Decimal("0")
+                    value += Decimal(qty) * mid
         return Summary(
             cash=cash,
             positions_value=value,
@@ -171,12 +175,12 @@ class Portfolio:
 
     def mark_to_market(self, mids: dict[str, Decimal]) -> Summary:
         s = self._compute(mids)
-        self._conn.execute(
-            "INSERT INTO snapshots(at, cash, positions_value, total_equity,"
-            " unrealized_pnl) VALUES (?,?,?,?,?)",
-            (_now(), str(s.cash), str(s.positions_value), str(s.total_equity),
-             str(s.unrealized_pnl)))
-        self._conn.commit()
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO snapshots(at, cash, positions_value, total_equity,"
+                " unrealized_pnl) VALUES (?,?,?,?,?)",
+                (_now(), str(s.cash), str(s.positions_value), str(s.total_equity),
+                 str(s.unrealized_pnl)))
         return s
 
     def summary(self) -> Summary:

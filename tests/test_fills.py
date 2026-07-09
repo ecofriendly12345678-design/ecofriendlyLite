@@ -55,16 +55,46 @@ def test_plan_set_purchase_happy_path():
 
 def test_plan_set_purchase_walks_depth_until_edge_gone():
     # Leg1: 10 @ 0.55 then 0.70; leg2: plentiful @ 0.42.
-    # 10 sets: per-set 0.97 <= 0.99 OK. 20 sets: leg1 = 10*0.55+10*0.70=12.5,
-    # leg2 = 20*0.42=8.4 -> per-set (12.5+8.4)/20 = 1.045 > 0.99 -> only 10 sets.
+    # Past 10 sets the marginal set costs 0.70+0.42=1.12, so the average
+    # per-set cost is 1.12 - 1.5/q; the 0.99 cap binds at q = 1.5/0.13 = 11.538.
+    # Largest feasible on the 0.01 grid is 11.53 (11.54 -> 0.99002 > 0.99).
     books = {
         "1": book("1", (("0.55", "10"), ("0.70", "1000"))),
         "2": book("2", (("0.42", "1000"),)),
     }
     sp = plan_set_purchase(RS, books, Decimal("0.99"), Decimal("10000"))
     assert sp is not None
-    assert sp.n_sets == Decimal("10")
-    assert sp.cost_per_set == Decimal("0.97")
+    assert sp.n_sets == Decimal("11.53")
+    assert sp.cost_per_set <= Decimal("0.99")
+    assert sp.locked_profit > 0
+
+
+def test_plan_set_purchase_notional_binds_past_first_level():
+    # Review finding regression: when the notional cap binds after walking
+    # into deeper levels, the optimum lies between depth breakpoints.
+    # cost(q>10) = 10*0.40 + (q-10)*0.56 + q*0.42 = 0.98q - 1.6 <= 50
+    # -> q <= 52.653; largest on grid = 52.65 (cost 49.997).
+    books = {
+        "1": book("1", (("0.40", "10"), ("0.56", "1000"))),
+        "2": book("2", (("0.42", "1000"),)),
+    }
+    sp = plan_set_purchase(RS, books, Decimal("0.99"), Decimal("50"))
+    assert sp is not None
+    assert sp.n_sets == Decimal("52.65")
+    assert sp.total_cost <= Decimal("50")
+
+
+def test_plan_set_purchase_notional_optimum_between_breakpoints():
+    # Review finding regression: cost(q>10) = 4 + (q-10)*0.50 + q*0.40
+    # = 0.9q - 1 <= 10 -> q <= 12.222; largest on grid = 12.22 (cost 9.998).
+    books = {
+        "1": book("1", (("0.40", "10"), ("0.50", "100"))),
+        "2": book("2", (("0.40", "1000"),)),
+    }
+    sp = plan_set_purchase(RS, books, Decimal("0.95"), Decimal("10"))
+    assert sp is not None
+    assert sp.n_sets == Decimal("12.22")
+    assert sp.total_cost <= Decimal("10")
 
 
 def test_plan_set_purchase_thin_book_sizes_down():

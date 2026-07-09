@@ -36,6 +36,20 @@ def main() -> int:
         time.sleep(60)
         return 0
 
+    if MODE == "books_batch_fail":
+        # Batched books call is poisoned; individual `clob book` works for
+        # known tokens and 404s otherwise (mirrors live CLOB behavior).
+        if args[:2] == ["clob", "books"]:
+            print(json.dumps({"error": "no orderbook exists for one of the requested token ids"}))
+            return 1
+        if args[:2] == ["clob", "book"]:
+            book = {"255": BOOK_255, "256": BOOK_256}.get(args[2])
+            if book is None:
+                print(json.dumps({"error": "No orderbook exists for the requested token id"}))
+                return 1
+            print(json.dumps(book))
+            return 0
+
     # MODE == "ok": route by subcommand
     if args[:2] == ["markets", "get"]:
         print(json.dumps({"id": "540817", "question": "Q?", "slug": args[2]}))

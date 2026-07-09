@@ -68,3 +68,9 @@ def test_bad_json_raises():
 def test_timeout_raises():
     with pytest.raises(CliError, match="[Tt]ime"):
         make("hang", timeout=1.0).get_market("x")
+
+
+def test_get_books_batch_failure_falls_back_to_individual():
+    # Review finding regression: one bad token must not blind the whole tick.
+    books = make("books_batch_fail").get_books(["255", "999", "256"])
+    assert set(books) == {"255", "256"}  # bad token skipped, good ones kept

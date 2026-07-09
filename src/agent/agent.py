@@ -1,5 +1,5 @@
-"""Real-time polling loop. One tick = fetch books -> scan -> risk-check ->
-simulate fills -> ledger -> mark-to-market -> report."""
+"""Real-time polling loop. One tick = fetch books -> scan -> simulate fills ->
+risk-check -> ledger -> mark-to-market -> report."""
 from __future__ import annotations
 
 import argparse
@@ -15,8 +15,15 @@ from agent.portfolio import Portfolio, Summary
 from agent.scanner import find_opportunities, result_set_from_event, result_set_from_market
 
 
-def build_result_sets(cli, watchlist: tuple[WatchlistEntry, ...]) -> list[ResultSet]:
-    sets: list[ResultSet] = []
+def build_result_sets(
+    cli, watchlist: tuple[WatchlistEntry, ...],
+) -> tuple[dict[str, ResultSet], set[str]]:
+    """Resolve watchlist entries. Returns (sets keyed by entry ref, refs that
+    errored). A ref that resolves but is not tradeable (closed market) appears
+    in neither — callers should drop it. A ref that errored (transient CLI
+    failure) is reported so callers can keep a previously known-good set."""
+    sets: dict[str, ResultSet] = {}
+    errored: set[str] = set()
     for entry in watchlist:
         try:
             if entry.type == "binary":
@@ -25,12 +32,28 @@ def build_result_sets(cli, watchlist: tuple[WatchlistEntry, ...]) -> list[Result
                 rs = result_set_from_event(cli.get_event(entry.ref))
         except Exception as e:  # noqa: BLE001 - one bad entry must not kill the loop
             print(f"warn: watchlist entry {entry.ref!r} failed: {e}")
+            errored.add(entry.ref)
             continue
         if rs is None:
             print(f"warn: watchlist entry {entry.ref!r} is not tradeable, skipping")
             continue
-        sets.append(rs)
-    return sets
+        sets[entry.ref] = rs
+    return sets, errored
+
+
+def merge_refresh(
+    old: dict[str, ResultSet],
+    new: dict[str, ResultSet],
+    errored: set[str],
+) -> dict[str, ResultSet]:
+    """Refresh policy: take the new resolution; keep the previous set for
+    entries that merely errored (transient failure != market gone); drop
+    entries that resolved as not-tradeable (absent from both new and errored)."""
+    merged = dict(new)
+    for ref in errored:
+        if ref in old:
+            merged[ref] = old[ref]
+    return merged
 
 
 def tick(cli, sets: list[ResultSet], portfolio: Portfolio, cfg: Config) -> Summary:
@@ -41,25 +64,37 @@ def tick(cli, sets: list[ResultSet], portfolio: Portfolio, cfg: Config) -> Summa
     opps = find_opportunities(
         sets, books, cfg.min_edge, cfg.est_fee, cfg.sanity_min_mid_sum
     )
+    # Tokens already bought this tick: a second set sharing a token would be
+    # filled against depth the first purchase already (virtually) consumed.
+    used_tokens: set[str] = set()
     for opp in opps:
+        rs = opp.result_set
+        if used_tokens & set(rs.token_ids):
+            reason = "token overlap with an earlier trade this tick"
+            portfolio.record_opportunity(opp, acted=False, reason=reason)
+            print(report.render_opportunity(opp, False, reason))
+            continue
+        # Plan first so the risk gate sees the ACTUAL cost — gating on the
+        # per-trade cap would permanently halt trading once cash < cap.
+        purchase = plan_set_purchase(
+            rs, books,
+            max_cost_per_set=Decimal("1") - cfg.min_edge - cfg.est_fee,
+            max_notional=min(cfg.max_notional_per_trade_usd, portfolio.cash()),
+        )
+        if purchase is None:
+            reason = "insufficient depth at executable prices"
+            portfolio.record_opportunity(opp, acted=False, reason=reason)
+            print(report.render_opportunity(opp, False, reason))
+            continue
         ok, reason = portfolio.can_open(
-            cfg.max_notional_per_trade_usd, opp.result_set.set_id,
-            cfg.max_concurrent_positions,
+            purchase.total_cost, rs.set_id, cfg.max_concurrent_positions,
         )
         if not ok:
             portfolio.record_opportunity(opp, acted=False, reason=reason)
             print(report.render_opportunity(opp, False, reason))
             continue
-        purchase = plan_set_purchase(
-            opp.result_set, books,
-            max_cost_per_set=Decimal("1") - cfg.min_edge - cfg.est_fee,
-            max_notional=min(cfg.max_notional_per_trade_usd, portfolio.cash()),
-        )
-        if purchase is None:
-            portfolio.record_opportunity(opp, acted=False, reason="insufficient depth")
-            print(report.render_opportunity(opp, False, "insufficient depth"))
-            continue
         portfolio.open_position(purchase)
+        used_tokens.update(rs.token_ids)
         reason = (f"bought {purchase.n_sets} sets @ {purchase.cost_per_set} "
                   f"locked={purchase.locked_profit}")
         portfolio.record_opportunity(opp, acted=True, reason=reason)
@@ -74,8 +109,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--once", action="store_true", help="run a single tick")
     parser.add_argument("--refresh-every", type=int, default=60,
-                        help="rebuild result sets every N ticks")
+                        help="rebuild result sets every N ticks (N >= 1)")
     args = parser.parse_args(argv)
+    if args.refresh_every < 1:
+        parser.error("--refresh-every must be >= 1")
 
     cfg = load_config(args.config)
     cli = PolymarketCli()
@@ -84,35 +121,39 @@ def main(argv: list[str] | None = None) -> int:
     print(f"watchlist: {len(cfg.watchlist)} entries; paper capital "
           f"${cfg.virtual_capital_usd}; poll every {cfg.poll_interval_seconds}s "
           f"(read-only, fills are simulated)")
-    sets = build_result_sets(cli, cfg.watchlist)
-    if not sets:
-        print("error: no tradeable sets in watchlist")
-        return 1
-    print(f"tracking {len(sets)} result sets, "
-          f"{sum(len(rs.outcomes) for rs in sets)} outcome tokens")
 
-    n = 0
-    while True:
-        try:
-            summary = tick(cli, sets, portfolio, cfg)
-            print(report.render_summary(summary))
-        except CliError as e:
-            print(f"warn: tick failed: {e}")
-        except KeyboardInterrupt:
-            print("\nstopping.")
-            return 0
-        except Exception as e:  # noqa: BLE001 - loop must survive surprises
-            print(f"error: unexpected failure in tick: {e!r}")
-        if args.once:
-            return 0
-        n += 1
-        if n % args.refresh_every == 0:
-            sets = build_result_sets(cli, cfg.watchlist) or sets
-        try:
+    # Everything below may block in subprocess calls; one handler gives Ctrl-C
+    # a clean exit no matter where it lands (tick, refresh, or sleep).
+    try:
+        sets_by_ref, _ = build_result_sets(cli, cfg.watchlist)
+        if not sets_by_ref:
+            print("error: no tradeable sets in watchlist")
+            return 1
+        print(f"tracking {len(sets_by_ref)} result sets, "
+              f"{sum(len(rs.outcomes) for rs in sets_by_ref.values())} outcome tokens")
+
+        n = 0
+        while True:
+            try:
+                summary = tick(cli, list(sets_by_ref.values()), portfolio, cfg)
+                print(report.render_summary(summary))
+            except CliError as e:
+                print(f"warn: tick failed: {e}")
+            except Exception as e:  # noqa: BLE001 - loop must survive surprises
+                print(f"error: unexpected failure in tick: {e!r}")
+            if args.once:
+                return 0
+            n += 1
+            if n % args.refresh_every == 0:
+                new_sets, errored = build_result_sets(cli, cfg.watchlist)
+                sets_by_ref = merge_refresh(sets_by_ref, new_sets, errored)
+                if not sets_by_ref:
+                    print("error: watchlist has no tradeable sets left")
+                    return 1
             time.sleep(cfg.poll_interval_seconds)
-        except KeyboardInterrupt:
-            print("\nstopping.")
-            return 0
+    except KeyboardInterrupt:
+        print("\nstopping.")
+        return 0
 
 
 if __name__ == "__main__":
