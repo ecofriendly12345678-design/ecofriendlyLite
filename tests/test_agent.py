@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from agent.agent import build_result_sets, main, merge_refresh, tick
-from agent.config import Config, WatchlistEntry
+from agent.config import Config, StrategyConfig, WatchlistEntry
 from agent.portfolio import Portfolio
 
 
@@ -59,6 +59,18 @@ def cfg(tmp_path, min_edge="0.01", capital="1000", watchlist=None):
         db_path=str(tmp_path / "ledger.db"),
         watchlist=watchlist or (WatchlistEntry("binary", "q"),),
     )
+
+
+def strategy_cfg(tmp_path, implication_file=None):
+    return {
+        "complete_set": StrategyConfig(True, Decimal("500")),
+        "implication": StrategyConfig(
+            implication_file is not None,
+            Decimal("300"),
+            relations_file=str(implication_file) if implication_file else None,
+        ),
+        "momentum": StrategyConfig(False, Decimal("200")),
+    }
 
 
 def sets_list(cli, watchlist):
@@ -125,9 +137,54 @@ def test_tick_routes_complete_set_through_paper_broker(tmp_path, capsys):
     assert cli.get_books_calls == 1
     assert "source=polymarket_cli" in captured
     rows = sqlite3.connect(c.db_path).execute(
-        "SELECT status, last_match_source FROM paper_orders"
+        "SELECT strategy, status, last_match_source FROM paper_orders"
     ).fetchall()
-    assert rows == [("filled", "polymarket_cli")]
+    assert rows == [("complete_set", "filled", "polymarket_cli")]
+
+
+def test_tick_loads_enabled_implication_strategy(tmp_path):
+    relations = tmp_path / "implications.yaml"
+    relations.write_text(
+        """
+implications:
+  - if: harder
+    then: easier
+    note: "same source and resolution window checked 2026-07-09"
+""".strip()
+    )
+    c = cfg(tmp_path, watchlist=())
+    c = Config(
+        virtual_capital_usd=c.virtual_capital_usd,
+        poll_interval_seconds=c.poll_interval_seconds,
+        min_edge=c.min_edge,
+        est_fee=c.est_fee,
+        max_notional_per_trade_usd=c.max_notional_per_trade_usd,
+        max_concurrent_positions=c.max_concurrent_positions,
+        sanity_min_mid_sum=c.sanity_min_mid_sum,
+        db_path=c.db_path,
+        watchlist=c.watchlist,
+        strategies=strategy_cfg(tmp_path, relations),
+    )
+    cli = FakeCli(
+        markets={
+            "harder": market_json(cond="0xa", yes="11", no="12", slug="harder"),
+            "easier": market_json(cond="0xb", yes="21", no="22", slug="easier"),
+        },
+        books={
+            "12": raw_book("12", "0.44", "0.42"),
+            "21": raw_book("21", "0.52", "0.50"),
+        },
+    )
+    portfolio = Portfolio(c.db_path, c.virtual_capital_usd)
+
+    s = tick(cli, [], portfolio, c)
+
+    assert s.open_positions == 1
+    assert portfolio.has_open_position("implication:0xa=>0xb")
+    rows = sqlite3.connect(c.db_path).execute(
+        "SELECT strategy, status, last_match_source FROM paper_orders"
+    ).fetchall()
+    assert rows == [("implication", "filled", "polymarket_cli")]
 
 
 def test_tick_no_arb_no_position(tmp_path):

@@ -10,13 +10,14 @@ from decimal import Decimal
 from agent import report
 from agent.cli import CliError, PolymarketCli
 from agent.config import Config, WatchlistEntry, load_config
-from agent.fills import plan_set_purchase
 from agent.market_data import BookSnapshot
 from agent.models import OrderBook, ResultSet
 from agent.paper_broker import PaperBroker, PaperOrder
 from agent.portfolio import Portfolio, Summary
-from agent.scanner import find_opportunities, result_set_from_event, result_set_from_market
-from agent.strategies import EntryProposal
+from agent.scanner import result_set_from_event, result_set_from_market
+from agent.strategies import EntryProposal, StrategyProtocol, TickContext
+from agent.strategies.complete_set import CompleteSetStrategy
+from agent.strategies.implication import ImplicationStrategy
 
 
 def build_result_sets(
@@ -60,8 +61,55 @@ def merge_refresh(
     return merged
 
 
+def build_strategies(cli, sets: list[ResultSet], cfg: Config) -> list[StrategyProtocol]:
+    strategies: list[StrategyProtocol] = []
+    complete_set_cfg = cfg.strategies.get("complete_set") if cfg.strategies else None
+    if complete_set_cfg is None or complete_set_cfg.enabled:
+        strategies.append(CompleteSetStrategy(sets))
+
+    implication_cfg = cfg.strategies.get("implication") if cfg.strategies else None
+    if implication_cfg is not None and implication_cfg.enabled:
+        if not implication_cfg.relations_file:
+            print("warn: implication enabled but no relations_file configured")
+        else:
+            try:
+                strategies.append(
+                    ImplicationStrategy.from_file(cli, implication_cfg.relations_file)
+                )
+            except Exception as e:  # noqa: BLE001 - bad optional strategy must not kill v1
+                print(f"warn: implication strategy failed to load: {e}")
+    return strategies
+
+
+def _strategy_context(
+    cfg: Config,
+    portfolio: Portfolio,
+    strategy_name: str,
+    now: datetime,
+) -> TickContext:
+    strategy_cfg = cfg.strategies.get(strategy_name) if cfg.strategies else None
+    section = dict(strategy_cfg.params or {}) if strategy_cfg is not None else {}
+    section.update({
+        "min_edge": cfg.min_edge,
+        "est_fee": cfg.est_fee,
+        "sanity_min_mid_sum": cfg.sanity_min_mid_sum,
+        "max_notional_per_trade_usd": min(
+            cfg.max_notional_per_trade_usd,
+            portfolio.cash(),
+        ),
+    })
+    return TickContext(now=now, config_section=section)
+
+
+def _strategy_buckets(cfg: Config) -> dict[str, Decimal]:
+    if not cfg.strategies:
+        return {"complete_set": cfg.virtual_capital_usd}
+    return {name: strategy.bucket_usd for name, strategy in cfg.strategies.items()}
+
+
 def tick(cli, sets: list[ResultSet], portfolio: Portfolio, cfg: Config) -> Summary:
-    all_tokens = sorted({t for rs in sets for t in rs.token_ids})
+    strategies = build_strategies(cli, sets, cfg)
+    all_tokens = sorted({t for strategy in strategies for t in strategy.required_tokens()})
     raw_books = cli.get_books(all_tokens)
     books = {tid: OrderBook.from_json(b) for tid, b in raw_books.items()}
     snapshot = BookSnapshot(
@@ -70,67 +118,35 @@ def tick(cli, sets: list[ResultSet], portfolio: Portfolio, cfg: Config) -> Summa
         books=books,
     )
     print(report.render_market_data(snapshot))
-    complete_set_cfg = cfg.strategies.get("complete_set") if cfg.strategies else None
-    strategy_buckets = {
-        "complete_set": (
-            complete_set_cfg.bucket_usd if complete_set_cfg is not None
-            else cfg.virtual_capital_usd
-        )
-    }
     broker = PaperBroker(
         portfolio,
         max_concurrent_positions=cfg.max_concurrent_positions,
-        strategy_buckets=strategy_buckets,
+        strategy_buckets=_strategy_buckets(cfg),
         max_book_age_seconds=max(cfg.poll_interval_seconds * 2, 1),
-    )
-
-    opps = find_opportunities(
-        sets, books, cfg.min_edge, cfg.est_fee, cfg.sanity_min_mid_sum
     )
     # Tokens already bought this tick: a second set sharing a token would be
     # filled against depth the first purchase already (virtually) consumed.
     used_tokens: set[str] = set()
-    for opp in opps:
-        rs = opp.result_set
-        if used_tokens & set(rs.token_ids):
-            reason = "token overlap with an earlier trade this tick"
-            portfolio.record_opportunity(opp, acted=False, reason=reason)
-            print(report.render_opportunity(opp, False, reason))
-            continue
-        # Plan first so the risk gate sees the ACTUAL cost — gating on the
-        # per-trade cap would permanently halt trading once cash < cap.
-        purchase = plan_set_purchase(
-            rs, books,
-            max_cost_per_set=Decimal("1") - cfg.min_edge - cfg.est_fee,
-            max_notional=min(cfg.max_notional_per_trade_usd, portfolio.cash()),
-        )
-        if purchase is None:
-            reason = "insufficient depth at executable prices"
-            portfolio.record_opportunity(opp, acted=False, reason=reason)
-            print(report.render_opportunity(opp, False, reason))
-            continue
-        ok, reason = portfolio.can_open(
-            purchase.total_cost, rs.set_id, cfg.max_concurrent_positions,
-        )
-        if not ok:
-            portfolio.record_opportunity(opp, acted=False, reason=reason)
-            print(report.render_opportunity(opp, False, reason))
-            continue
-        order = PaperOrder.from_entry_proposal(
-            EntryProposal("complete_set", purchase, f"edge={opp.edge}"),
-            created_at=snapshot.fetched_at,
-        )
-        submit = broker.submit_order(order)
-        match = broker.match_open_orders(snapshot, now=snapshot.fetched_at)
-        acted = match.filled > 0
-        if acted:
-            used_tokens.update(rs.token_ids)
-            reason = (f"paper order {submit.order_id} filled {purchase.n_sets} sets "
-                      f"@ {purchase.cost_per_set} locked={purchase.locked_profit}")
-        else:
-            reason = match.messages[0] if match.messages else "paper order not filled"
-        portfolio.record_opportunity(opp, acted=acted, reason=reason)
-        print(report.render_opportunity(opp, acted, reason))
+    for strategy in strategies:
+        ctx = _strategy_context(cfg, portfolio, strategy.name, snapshot.fetched_at)
+        for proposal in strategy.propose_entries(books, ctx):
+            purchase = proposal.purchase
+            rs = purchase.result_set
+            if used_tokens & set(rs.token_ids):
+                reason = "token overlap with an earlier trade this tick"
+                print(report.render_entry_proposal(proposal, False, reason))
+                continue
+            order = PaperOrder.from_entry_proposal(proposal, created_at=snapshot.fetched_at)
+            submit = broker.submit_order(order)
+            match = broker.match_open_orders(snapshot, now=snapshot.fetched_at)
+            acted = match.filled > 0
+            if acted:
+                used_tokens.update(rs.token_ids)
+                reason = (f"paper order {submit.order_id} filled {purchase.n_sets} sets "
+                          f"@ {purchase.cost_per_set} locked={purchase.locked_profit}")
+            else:
+                reason = match.messages[0] if match.messages else "paper order not filled"
+            print(report.render_entry_proposal(proposal, acted, reason))
 
     mids = {tid: b.midpoint for tid, b in books.items() if b.midpoint is not None}
     return portfolio.mark_to_market(mids)

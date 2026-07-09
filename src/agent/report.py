@@ -4,6 +4,7 @@ from __future__ import annotations
 from agent.market_data import BookSnapshot
 from agent.models import Opportunity
 from agent.portfolio import Summary
+from agent.strategies import EntryProposal
 
 
 def _fmt(d) -> str:
@@ -31,4 +32,14 @@ def render_opportunity(opp: Opportunity, acted: bool, reason: str) -> str:
     return (
         f"[{mark}] {opp.result_set.kind} {opp.result_set.description[:60]!r} "
         f"cost/set={opp.cost} edge={opp.edge} ({reason})"
+    )
+
+
+def render_entry_proposal(proposal: EntryProposal, acted: bool, reason: str) -> str:
+    mark = "TRADED" if acted else "SKIP"
+    purchase = proposal.purchase
+    rs = purchase.result_set
+    return (
+        f"[{mark}] {proposal.strategy} {rs.kind} {rs.description[:60]!r} "
+        f"cost/set={purchase.cost_per_set} ({reason})"
     )
