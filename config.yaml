@@ -8,6 +8,13 @@ max_concurrent_positions: 10
 sanity_min_mid_sum: 0.95         # skip sets whose midpoints sum below this (likely non-exhaustive)
 db_path: virtual_ledger.db
 watchlist:
-  # Filled with live markets during the smoke-test task (Task 10).
+  # Long-dated binary markets (resolve at GTA VI release — stay alive for months)
   - type: binary
     ref: new-rhianna-album-before-gta-vi-926
+  - type: binary
+    ref: new-playboi-carti-album-before-gta-vi-421
+  - type: binary
+    ref: will-bitcoin-hit-1m-before-gta-vi-872-424
+  # Neg-risk multi-outcome event: Harvey Weinstein sentencing (mutually exclusive brackets)
+  - type: event
+    ref: "24383"
