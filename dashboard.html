@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Polymarket Paper Ledger</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #d9dee7;
+      --text: #17202a;
+      --muted: #687385;
+      --good: #087f5b;
+      --bad: #c92a2a;
+      --warn: #9a6700;
+      --ink: #243447;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 24px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+    main {
+      width: min(1440px, 100%);
+      margin: 0 auto;
+      padding: 18px 24px 32px;
+    }
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .metric {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      min-height: 74px;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .metric strong {
+      display: block;
+      color: var(--ink);
+      font-size: 21px;
+      font-weight: 750;
+      line-height: 1.1;
+      overflow-wrap: anywhere;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(340px, 0.75fr);
+      gap: 16px;
+      align-items: start;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+    section h2 {
+      margin: 0;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+    .table-wrap {
+      overflow: auto;
+      max-height: 380px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+    }
+    th, td {
+      padding: 9px 10px;
+      border-bottom: 1px solid #edf0f4;
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #fbfcfd;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    td.desc {
+      white-space: normal;
+      min-width: 220px;
+      max-width: 420px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: #edf0f4;
+      color: var(--ink);
+    }
+    .filled, .open { background: #e6f4ef; color: var(--good); }
+    .rejected, .closed { background: #fdeaea; color: var(--bad); }
+    .submitted, .partial { background: #fff4d6; color: var(--warn); }
+    .empty {
+      padding: 24px 14px;
+      color: var(--muted);
+    }
+    canvas {
+      width: 100%;
+      height: 220px;
+      display: block;
+      background: #fbfcfd;
+    }
+    @media (max-width: 980px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid { grid-template-columns: 1fr; }
+      main { padding: 14px; }
+      .status { white-space: normal; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Polymarket Paper Ledger</h1>
+    <div class="status" id="status">Connecting...</div>
+  </header>
+  <main>
+    <div class="metrics">
+      <div class="metric"><span>Cash</span><strong id="cash">$0.00</strong></div>
+      <div class="metric"><span>Equity</span><strong id="equity">$0.00</strong></div>
+      <div class="metric"><span>Position Value</span><strong id="value">$0.00</strong></div>
+      <div class="metric"><span>Unrealized PnL</span><strong id="upnl">$0.00</strong></div>
+      <div class="metric"><span>Locked PnL</span><strong id="locked">$0.00</strong></div>
+      <div class="metric"><span>Open Positions</span><strong id="openPositions">0</strong></div>
+    </div>
+
+    <div class="grid">
+      <div>
+        <section>
+          <h2>Orders</h2>
+          <div class="table-wrap"><table id="orders"></table></div>
+        </section>
+        <section>
+          <h2>Fills</h2>
+          <div class="table-wrap"><table id="fills"></table></div>
+        </section>
+      </div>
+      <div>
+        <section>
+          <h2>Equity</h2>
+          <canvas id="equityChart" width="720" height="260"></canvas>
+        </section>
+        <section>
+          <h2>Positions</h2>
+          <div class="table-wrap"><table id="positions"></table></div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <script>
+    const money = value => {
+      const n = Number(value || 0);
+      return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+    };
+    const shortTime = value => value ? new Date(value).toLocaleString() : "";
+    const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+    }[c]));
+    const pill = status => `<span class="pill ${esc(status)}">${esc(status)}</span>`;
+
+    function table(el, columns, rows) {
+      if (!rows.length) {
+        el.innerHTML = `<tbody><tr><td class="empty">No rows</td></tr></tbody>`;
+        return;
+      }
+      el.innerHTML = `
+        <thead><tr>${columns.map(c => `<th>${esc(c.label)}</th>`).join("")}</tr></thead>
+        <tbody>${rows.map(row => `
+          <tr>${columns.map(c => `<td class="${c.className || ""}">${c.render ? c.render(row) : esc(row[c.key])}</td>`).join("")}</tr>
+        `).join("")}</tbody>`;
+    }
+
+    function drawEquity(points) {
+      const canvas = document.getElementById("equityChart");
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#fbfcfd";
+      ctx.fillRect(0, 0, w, h);
+      if (!points.length) {
+        ctx.fillStyle = "#687385";
+        ctx.fillText("No equity snapshots", 18, 32);
+        return;
+      }
+      const values = points.map(p => Number(p.total_equity || 0));
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const pad = 24;
+      const span = max - min || 1;
+      ctx.strokeStyle = "#d9dee7";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 4; i++) {
+        const y = pad + (h - pad * 2) * i / 3;
+        ctx.beginPath();
+        ctx.moveTo(pad, y);
+        ctx.lineTo(w - pad, y);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "#087f5b";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      values.forEach((v, i) => {
+        const x = pad + (w - pad * 2) * (points.length === 1 ? 1 : i / (points.length - 1));
+        const y = h - pad - ((v - min) / span) * (h - pad * 2);
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
+      ctx.stroke();
+      ctx.fillStyle = "#243447";
+      ctx.fillText(money(values[values.length - 1]), pad, 18);
+    }
+
+    function render(state) {
+      const s = state.summary;
+      document.getElementById("cash").textContent = money(s.cash);
+      document.getElementById("equity").textContent = money(s.total_equity);
+      document.getElementById("value").textContent = money(s.positions_value);
+      document.getElementById("upnl").textContent = money(s.unrealized_pnl);
+      document.getElementById("locked").textContent = money(s.guaranteed_pnl);
+      document.getElementById("openPositions").textContent = s.open_positions;
+
+      table(document.getElementById("orders"), [
+        { label: "ID", key: "id" },
+        { label: "Time", render: r => esc(shortTime(r.updated_at)) },
+        { label: "Strategy", key: "strategy" },
+        { label: "Status", render: r => pill(r.status) },
+        { label: "Qty", key: "target_qty" },
+        { label: "Limit", render: r => money(r.max_total_cost) },
+        { label: "Source", key: "last_match_source" },
+        { label: "Set", key: "description", className: "desc" }
+      ], state.orders);
+
+      table(document.getElementById("fills"), [
+        { label: "Time", render: r => esc(shortTime(r.filled_at)) },
+        { label: "Order", key: "order_id" },
+        { label: "Token", key: "label" },
+        { label: "Side", key: "side" },
+        { label: "Qty", key: "qty" },
+        { label: "Avg", render: r => money(r.avg_price) },
+        { label: "Amount", render: r => money(r.amount) },
+        { label: "Source", key: "source" }
+      ], state.fills);
+
+      table(document.getElementById("positions"), [
+        { label: "Opened", render: r => esc(shortTime(r.opened_at)) },
+        { label: "Strategy", key: "strategy" },
+        { label: "Status", render: r => pill(r.status) },
+        { label: "Sets", key: "n_sets" },
+        { label: "Cost", render: r => money(r.total_cost) },
+        { label: "Payout", render: r => money(r.guaranteed_payout) },
+        { label: "Set", key: "description", className: "desc" }
+      ], state.positions);
+
+      drawEquity(state.equity_curve);
+      document.getElementById("status").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch("/api/state", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        render(await res.json());
+      } catch (err) {
+        document.getElementById("status").textContent = `Disconnected: ${err.message}`;
+      }
+    }
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
