@@ -1,0 +1,13 @@
+# Polymarket paper-trading arb agent — user config
+virtual_capital_usd: 1000        # starting virtual cash
+poll_interval_seconds: 5
+min_edge: 0.01                   # act only if a full set is ≥1¢ under $1
+est_fee: 0.00                    # fee/slippage buffer subtracted from edge
+max_notional_per_trade_usd: 50
+max_concurrent_positions: 10
+sanity_min_mid_sum: 0.95         # skip sets whose midpoints sum below this (likely non-exhaustive)
+db_path: virtual_ledger.db
+watchlist:
+  # Filled with live markets during the smoke-test task (Task 10).
+  - type: binary
+    ref: new-rhianna-album-before-gta-vi-926
