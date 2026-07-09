@@ -100,6 +100,21 @@ def test_set_purchase_derived_values():
     assert sp.locked_profit == Decimal("0.3")
 
 
+def test_set_purchase_can_have_zero_payout_floor():
+    rs = ResultSet("s", "d", "momentum", (Outcome("1", "Yes"),))
+    fills = (Fill("1", "Yes", Decimal("10"), Decimal("0.55"), Decimal("5.5")),)
+    sp = SetPurchase(
+        rs,
+        Decimal("10"),
+        fills,
+        Decimal("5.5"),
+        payout_floor_per_set=Decimal("0"),
+    )
+
+    assert sp.guaranteed_payout == Decimal("0")
+    assert sp.locked_profit == Decimal("-5.5")
+
+
 def test_opportunity_fields():
     rs = ResultSet("s", "d", "binary", (Outcome("1", "Yes"), Outcome("2", "No")))
     opp = Opportunity(rs, {"1": Decimal("0.55"), "2": Decimal("0.42")},

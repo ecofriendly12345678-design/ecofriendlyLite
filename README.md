@@ -27,7 +27,7 @@ PYTHONPATH=src .venv/bin/python -m agent.agent --once    # single tick
 ```
 
 Edit `config.yaml` to set the watchlist (market slugs / event ids), virtual
-capital, edge threshold, and poll interval.
+capital, edge threshold, poll interval, and strategy buckets.
 
 ## How it works
 
@@ -44,6 +44,14 @@ record in the ledger → mark-to-market from book mids.
 True risk-free arbs are rare and small on a liquid venue; the point of this
 agent is a correct detection/execution loop, learning market mechanics, and
 measuring how often edge appears. Watch near-misses by lowering `min_edge`.
+
+## v2 scaffold
+
+The v2 strategy layer is being introduced behind the existing v1 loop.
+`complete_set` remains enabled by default. `implication` is disabled until
+`implications.yaml` contains manually verified A-implies-B relations with
+matching resolution terms. `momentum` stays disabled until v2b backtests
+validate parameters.
 
 ## Design docs
 

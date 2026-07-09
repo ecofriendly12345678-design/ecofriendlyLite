@@ -43,6 +43,45 @@ def test_money_fields_are_decimal(tmp_path):
     assert isinstance(cfg.max_notional_per_trade_usd, Decimal)
 
 
+def test_default_strategy_config_when_missing(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(VALID)
+    cfg = load_config(str(p))
+
+    assert cfg.strategies["complete_set"].enabled is True
+    assert cfg.strategies["complete_set"].bucket_usd == cfg.virtual_capital_usd
+    assert cfg.strategies["implication"].enabled is False
+    assert cfg.strategies["momentum"].enabled is False
+
+
+def test_load_strategy_config(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        VALID
+        + """
+strategies:
+  complete_set:
+    enabled: true
+    bucket_usd: 500
+  implication:
+    enabled: true
+    bucket_usd: 300
+    relations_file: implications.yaml
+  momentum:
+    enabled: false
+    bucket_usd: 200
+    params:
+      lookback_minutes: 60
+"""
+    )
+    cfg = load_config(str(p))
+
+    assert cfg.strategies["complete_set"].bucket_usd == Decimal("500")
+    assert cfg.strategies["implication"].enabled is True
+    assert cfg.strategies["implication"].relations_file == "implications.yaml"
+    assert cfg.strategies["momentum"].params == {"lookback_minutes": 60}
+
+
 def test_missing_field_raises(tmp_path):
     p = tmp_path / "c.yaml"
     p.write_text("min_edge: 0.01\n")

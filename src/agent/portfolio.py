@@ -20,10 +20,15 @@ CREATE TABLE IF NOT EXISTS positions (
   set_id TEXT NOT NULL,
   description TEXT NOT NULL,
   kind TEXT NOT NULL,
+  strategy TEXT NOT NULL DEFAULT 'complete_set',
   n_sets TEXT NOT NULL,
   total_cost TEXT NOT NULL,
   guaranteed_payout TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'open'
+  status TEXT NOT NULL DEFAULT 'open',
+  closed_at TEXT,
+  proceeds TEXT,
+  realized_pnl TEXT,
+  close_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS fills (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,6 +39,15 @@ CREATE TABLE IF NOT EXISTS fills (
   avg_price TEXT NOT NULL,
   cost TEXT NOT NULL,
   last_mid TEXT
+);
+CREATE TABLE IF NOT EXISTS exit_fills (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id INTEGER NOT NULL REFERENCES positions(id),
+  token_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  qty TEXT NOT NULL,
+  avg_price TEXT NOT NULL,
+  proceeds TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS opportunities (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +88,7 @@ class Portfolio:
     def __init__(self, db_path: str, starting_capital: Decimal):
         self._conn = sqlite3.connect(db_path)
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         row = self._conn.execute(
             "SELECT value FROM meta WHERE key='starting_capital'").fetchone()
         if row is None:
@@ -85,12 +100,32 @@ class Portfolio:
         else:
             self._starting = Decimal(row[0])  # reopen: stored value wins
 
+    def _migrate(self) -> None:
+        columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(positions)").fetchall()
+        }
+        migrations = {
+            "strategy": "ALTER TABLE positions ADD COLUMN strategy TEXT NOT NULL DEFAULT 'complete_set'",
+            "closed_at": "ALTER TABLE positions ADD COLUMN closed_at TEXT",
+            "proceeds": "ALTER TABLE positions ADD COLUMN proceeds TEXT",
+            "realized_pnl": "ALTER TABLE positions ADD COLUMN realized_pnl TEXT",
+            "close_reason": "ALTER TABLE positions ADD COLUMN close_reason TEXT",
+        }
+        with self._conn:
+            for column, sql in migrations.items():
+                if column not in columns:
+                    self._conn.execute(sql)
+
     def cash(self) -> Decimal:
         # Sum in Decimal, never SQLite REAL — money math stays exact.
         rows = self._conn.execute(
-            "SELECT total_cost FROM positions WHERE status='open'").fetchall()
-        spent = sum((Decimal(r[0]) for r in rows), Decimal("0"))
-        return self._starting - spent
+            "SELECT status, total_cost, proceeds FROM positions").fetchall()
+        cash = self._starting
+        for status, total_cost, proceeds in rows:
+            cash -= Decimal(total_cost)
+            if status == "closed" and proceeds is not None:
+                cash += Decimal(proceeds)
+        return cash
 
     def has_open_position(self, set_id: str) -> bool:
         row = self._conn.execute(
@@ -102,17 +137,32 @@ class Portfolio:
         return self._conn.execute(
             "SELECT COUNT(*) FROM positions WHERE status='open'").fetchone()[0]
 
+    def _strategy_open_cost(self, strategy: str) -> Decimal:
+        rows = self._conn.execute(
+            "SELECT total_cost FROM positions WHERE status='open' AND strategy=?",
+            (strategy,)).fetchall()
+        return sum((Decimal(r[0]) for r in rows), Decimal("0"))
+
     def can_open(self, total_cost: Decimal, set_id: str,
-                 max_concurrent: int) -> tuple[bool, str]:
+                 max_concurrent: int, strategy: str = "complete_set",
+                 bucket_usd: Decimal | None = None) -> tuple[bool, str]:
         if self.has_open_position(set_id):
             return False, f"already have an open position on {set_id}"
         if self._open_count() >= max_concurrent:
             return False, f"max concurrent positions reached ({max_concurrent})"
+        if bucket_usd is not None:
+            used = self._strategy_open_cost(strategy)
+            if used + total_cost > bucket_usd:
+                return (
+                    False,
+                    f"strategy bucket {strategy} exceeded "
+                    f"({used + total_cost} > {bucket_usd})",
+                )
         if total_cost > self.cash():
             return False, f"insufficient cash ({self.cash()}) for cost {total_cost}"
         return True, "ok"
 
-    def open_position(self, purchase: SetPurchase) -> int:
+    def open_position(self, purchase: SetPurchase, strategy: str = "complete_set") -> int:
         rs = purchase.result_set
         # `with conn:` = one transaction — commits on success, rolls back on
         # any exception. Without it, a failure between the position INSERT and
@@ -120,11 +170,12 @@ class Portfolio:
         # commit silently persists, durably corrupting the ledger.
         with self._conn:
             cur = self._conn.execute(
-                "INSERT INTO positions(opened_at, set_id, description, kind, n_sets,"
-                " total_cost, guaranteed_payout, status)"
-                " VALUES (?,?,?,?,?,?,?, 'open')",
-                (_now(), rs.set_id, rs.description, rs.kind, str(purchase.n_sets),
-                 str(purchase.total_cost), str(purchase.guaranteed_payout)))
+                "INSERT INTO positions(opened_at, set_id, description, kind, strategy,"
+                " n_sets, total_cost, guaranteed_payout, status)"
+                " VALUES (?,?,?,?,?,?,?,?, 'open')",
+                (_now(), rs.set_id, rs.description, rs.kind, strategy,
+                 str(purchase.n_sets), str(purchase.total_cost),
+                 str(purchase.guaranteed_payout)))
             pid = cur.lastrowid
             for f in purchase.fills:
                 self._conn.execute(
@@ -133,6 +184,30 @@ class Portfolio:
                     (pid, f.token_id, f.label, str(f.qty), str(f.avg_price),
                      str(f.cost), str(f.avg_price)))
         return pid
+
+    def close_position(self, position_id: int, sell_fills, reason: str) -> None:
+        row = self._conn.execute(
+            "SELECT total_cost, status FROM positions WHERE id=?", (position_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"position {position_id} does not exist")
+        total_cost, status = row
+        if status != "open":
+            raise ValueError(f"position {position_id} is not open")
+
+        proceeds = sum((f.cost for f in sell_fills), Decimal("0"))
+        realized_pnl = proceeds - Decimal(total_cost)
+        with self._conn:
+            for f in sell_fills:
+                self._conn.execute(
+                    "INSERT INTO exit_fills(position_id, token_id, label, qty,"
+                    " avg_price, proceeds) VALUES (?,?,?,?,?,?)",
+                    (position_id, f.token_id, f.label, str(f.qty), str(f.avg_price),
+                     str(f.cost)))
+            self._conn.execute(
+                "UPDATE positions SET status='closed', closed_at=?, proceeds=?,"
+                " realized_pnl=?, close_reason=? WHERE id=?",
+                (_now(), str(proceeds), str(realized_pnl), reason, position_id))
 
     def record_opportunity(self, opp: Opportunity, acted: bool, reason: str) -> None:
         with self._conn:

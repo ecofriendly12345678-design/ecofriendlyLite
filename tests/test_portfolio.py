@@ -102,6 +102,58 @@ def test_record_opportunity(tmp_path):
     assert rows == [("0xc1", 0, "edge below threshold")]
 
 
+def test_open_position_records_strategy(tmp_path):
+    p = Portfolio(db(tmp_path), Decimal("1000"))
+    pid = p.open_position(make_purchase(), strategy="implication")
+
+    import sqlite3
+    rows = sqlite3.connect(db(tmp_path)).execute(
+        "SELECT id, strategy FROM positions").fetchall()
+    assert rows == [(pid, "implication")]
+
+
+def test_strategy_bucket_blocks_only_that_strategy(tmp_path):
+    p = Portfolio(db(tmp_path), Decimal("1000"))
+    p.open_position(make_purchase("0xc1", cost="9.7"), strategy="complete_set")
+
+    ok, reason = p.can_open(
+        Decimal("1.0"), "0xc2", 10,
+        strategy="complete_set", bucket_usd=Decimal("10"),
+    )
+    assert not ok
+    assert "strategy bucket" in reason
+
+    ok, reason = p.can_open(
+        Decimal("1.0"), "0xc3", 10,
+        strategy="implication", bucket_usd=Decimal("10"),
+    )
+    assert ok
+    assert reason == "ok"
+
+
+def test_close_position_updates_cash_and_realized_pnl(tmp_path):
+    p = Portfolio(db(tmp_path), Decimal("1000"))
+    pid = p.open_position(make_purchase(cost="9.7"), strategy="momentum")
+
+    p.close_position(
+        pid,
+        (
+            Fill("1", "Yes", Decimal("10"), Decimal("0.60"), Decimal("6.0")),
+            Fill("2", "No", Decimal("10"), Decimal("0.42"), Decimal("4.2")),
+        ),
+        reason="take profit",
+    )
+
+    assert p.cash() == Decimal("1000.5")
+    assert p.summary().open_positions == 0
+
+    import sqlite3
+    rows = sqlite3.connect(db(tmp_path)).execute(
+        "SELECT status, proceeds, realized_pnl, close_reason FROM positions"
+    ).fetchall()
+    assert rows == [("closed", "10.2", "0.5", "take profit")]
+
+
 class FlakyConn:
     """Wraps a sqlite3 connection; raises on the Nth statement matching a substring."""
 

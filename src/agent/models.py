@@ -94,6 +94,7 @@ class SetPurchase:
     n_sets: Decimal
     fills: tuple[Fill, ...]
     total_cost: Decimal
+    payout_floor_per_set: Decimal = Decimal("1")
 
     @property
     def cost_per_set(self) -> Decimal:
@@ -101,8 +102,8 @@ class SetPurchase:
 
     @property
     def guaranteed_payout(self) -> Decimal:
-        return self.n_sets
+        return self.n_sets * self.payout_floor_per_set
 
     @property
     def locked_profit(self) -> Decimal:
-        return self.n_sets - self.total_cost
+        return self.guaranteed_payout - self.total_cost
